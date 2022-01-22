@@ -1,12 +1,13 @@
 use actix_files::NamedFile;
-use actix_governor::{Governor, GovernorConfigBuilder};
-use actix_web::{error, middleware, web, App, HttpServer, Result};
+use actix_governor::{Governor, KeyExtractor, GovernorConfigBuilder};
+use actix_web::{error, middleware, web, App, HttpServer, Result, dev::ServiceRequest};
 use chrono::{SubsecRound, Utc};
 use clap::Parser;
 use serde::Deserialize;
 use std::{
     fs::{File, OpenOptions},
     io::Write,
+    net::IpAddr,
     path::PathBuf,
     sync::Mutex,
 };
@@ -109,12 +110,28 @@ async fn list_entries(web::Query(q): web::Query<Auth>) -> Result<NamedFile> {
     Ok(NamedFile::open(&ARGS.filename)?)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RealIpKeyExtractor;
+
+impl KeyExtractor for RealIpKeyExtractor {
+    type Key = IpAddr;
+    type KeyExtractionError = std::net::AddrParseError;
+
+    fn extract(&self, req: &ServiceRequest) -> Result<Self::Key, Self::KeyExtractionError> {
+        req.connection_info()
+            .realip_remote_addr()
+            .unwrap_or("")
+            .parse::<IpAddr>()
+    }
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     lazy_static::initialize(&ARGS);
     lazy_static::initialize(&FILE);
     env_logger::init();
     let add_limit = GovernorConfigBuilder::default()
+        .key_extractor(RealIpKeyExtractor::default())
         .per_second(ARGS.timeout_add)
         .burst_size(1)
         .finish()
