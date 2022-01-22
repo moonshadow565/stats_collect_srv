@@ -7,7 +7,7 @@ use serde::Deserialize;
 use std::{
     fs::{File, OpenOptions},
     io::Write,
-    net::IpAddr,
+    net::{IpAddr, SocketAddr},
     path::PathBuf,
     sync::Mutex,
 };
@@ -123,36 +123,21 @@ impl KeyExtractor for RealIpKeyExtractor {
     }
 
     fn extract(&self, req: &ServiceRequest) -> Result<Self::Key, Self::KeyExtractionError> {
-        // Get the reverse proxy IP that we put in app data
-        let reverse_proxy_ip = req
-            .app_data::<web::Data<IpAddr>>()
-            .map(|ip| ip.get_ref().to_owned())
-            .unwrap_or_else(|| IpAddr::from_str("0.0.0.0").unwrap());
-
-        let peer_ip = req.peer_addr().map(|socket| socket.ip());
-        let connection_info = req.connection_info();
-
-        match peer_ip {
-            // The request is coming from the reverse proxy, we can trust the `Forwarded` or `X-Forwarded-For` headers
-            Some(peer) if peer == reverse_proxy_ip => connection_info
-                .realip_remote_addr()
-                .ok_or("Could not extract real IP address from request")
-                .and_then(|str| {
-                    SocketAddr::from_str(str)
-                        .map(|socket| socket.ip())
-                        .or_else(|_| IpAddr::from_str(str))
-                        .map_err(|_| "Could not extract real IP address from request")
-                }),
-            // The request is not comming from the reverse proxy, we use peer IP
-            _ => connection_info
-                .remote_addr()
-                .ok_or("Could not extract peer IP address from request")
-                .and_then(|str| {
-                    SocketAddr::from_str(str)
-                        .map_err(|_| "Could not extract peer IP address from request")
-                })
-                .map(|socket| socket.ip()),
-        }
+        let real_ip = req
+            .connection_info()
+            .realip_remote_addr()
+            .unwrap_or("")
+            .to_owned();
+        let fixed_ip = match real_ip {
+            ipv6 if ipv6.starts_with('[') && ipv6.ends_with(']') => format!("{}:0", ipv6),
+            ipv6 if ipv6.starts_with('[') => ipv6,
+            ipv4 if !ipv4.contains(':') => format!("{}:0", ipv4),
+            ipv4 => ipv4,
+        };
+        Ok(fixed_ip
+            .parse::<SocketAddr>()
+            .map_err(|_| "Could not extract peer IP address from request")?
+            .ip())
     }
 
     #[cfg(feature = "log")]
